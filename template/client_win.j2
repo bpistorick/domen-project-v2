@@ -1,0 +1,21 @@
+client
+proto tcp-client
+dev tun
+remote {{ hostvars[server_partner].ansible_host }} {{ 20000 + hostvars[server_partner].openvpn_id }}
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+ca ca.crt
+cert {{ inventory_hostname }}.crt
+key {{ inventory_hostname }}.key
+remote-cert-tls server
+tls-auth ta.key 1
+data-ciphers-fallback AES-256-CBC
+data-ciphers AES-256-GCM:AES-128-GCM
+auth SHA256
+auth-nocache
+sndbuf 1048576
+rcvbuf 1048576
+keepalive 10 120
+verb 3

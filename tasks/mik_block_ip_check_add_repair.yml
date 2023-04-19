@@ -1,0 +1,24 @@
+---
+- name: Настроим переменные
+  set_fact:
+    needed_ip: "{{ hostvars[exim].ansible_host }}"
+    vdomain: "{{ hostvars[exim].vdomain }}"
+
+- name: Проверки наличия IP в списке block-ip
+  routeros_command:
+    commands:
+      - "ip firewall address-list print count-only where address={{ needed_ip }} list=block-ip  disabled=no"
+      - "ip firewall address-list print count-only where address={{ needed_ip }} list=block-ip  disabled=yes"
+  register: check_ip
+
+- name: Добавить IP в блок лист, если его там нет
+  routeros_command:
+    commands:
+      - "ip firewall address-list add address={{ needed_ip }} list=block-ip comment={{ vdomain }}"
+  when: check_ip.stdout_lines[0][-1] == "0" and check_ip.stdout_lines[1][-1] == "0"
+
+- name: Сделать активным если он деактивирован
+  routeros_command:
+    commands:
+      - "ip firewall address-list set disabled=no [ find address={{ needed_ip }} ]"
+  when: check_ip.stdout_lines[0][-1] == "0" and check_ip.stdout_lines[1][-1] == "1"

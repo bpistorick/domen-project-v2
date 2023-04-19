@@ -1,0 +1,2 @@
+headers remove Received
+headers remove x-originating-ip

@@ -1,0 +1,24 @@
+local 0.0.0.0
+port {{ 20000 + openvpn_id }}
+proto tcp-server
+dev tun
+ca /etc/openvpn/server{{ openvpn_id }}/ca.crt
+cert /etc/openvpn/server{{ openvpn_id }}/server.crt
+key /etc/openvpn/server{{ openvpn_id }}/server.key  # This file should be kept secret
+dh /etc/openvpn/server{{ openvpn_id }}/dh.pem
+server 10.100.{{ openvpn_id }}.0 255.255.255.0
+keepalive 10 120
+remote-cert-tls client
+tls-auth /etc/openvpn/server{{ openvpn_id }}/ta.key 0 # This file is secret
+cipher AES-256-CBC
+auth SHA256
+persist-key
+persist-tun
+client-to-client
+ifconfig-pool-persist ipp{{ openvpn_id }}.txt
+client-config-dir /etc/openvpn/ccd{{ openvpn_id }}
+status /var/log/openvpn/openvpn-status-{{ openvpn_id }}.log
+log /var/log/openvpn/openvpn-{{ openvpn_id }}.log
+log-append /var/log/openvpn/openvpn-{{ openvpn_id }}.log
+verb 3
+mute 20

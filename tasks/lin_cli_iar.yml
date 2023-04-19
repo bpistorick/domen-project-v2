@@ -1,0 +1,25 @@
+---
+- name: Copy needed files
+  copy:
+    src: "{{ item }}"
+    dest:  "/etc/openvpn/client_to_{{server_partner}}/"
+    mode: 0640
+  with_items:
+    - "{{ ans01_openvpn_dir_path }}/{{ hostvars[server_partner].ansible_host }}/ta.key"
+    - "{{ ans01_openvpn_dir_path }}/{{ hostvars[server_partner].ansible_host }}/ca.crt"
+    - "{{ ans01_openvpn_dir_path }}/{{ hostvars[server_partner].ansible_host }}/{{ hostname }}.key"
+    - "{{ ans01_openvpn_dir_path }}/{{ hostvars[server_partner].ansible_host }}/{{ hostname }}.crt"
+  notify: "Reload openvpn client"
+
+- name: Copy needed files
+  copy:
+    src: "{{ ans01_openvpn_dir_path }}/{{ hostvars[server_partner].ansible_host }}/{{ hostname }}.conf"
+    dest:  "/etc/openvpn/client_to_{{server_partner}}.conf"
+    mode: 0640
+  notify: "Reload openvpn client"
+
+- name: Run openvpn and enable this demon
+  systemd:
+    name: "openvpn@client_to_{{server_partner}}"
+    state: started
+    enabled: yes

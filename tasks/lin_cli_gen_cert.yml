@@ -1,0 +1,51 @@
+---
+- name: Load default variables
+  include_vars:
+    file: "variables/{{ hostvars[server_partner].vdomain }}.yml"
+    name: vdomain_vars
+
+- name: Check cli crt and key
+  stat:
+    path: "/root/EasyRSA-{{ hostvars[server_partner].hostname }}/pki/issued/{{ hostname }}.crt"
+  register: cli_crt
+  delegate_to: "{{ hostvars[server_partner].ansible_host }}"
+
+- name: Generate certificate
+  shell: 
+      cmd: "./easyrsa build-client-full {{ hostname }} nopass"
+      chdir: "/root/EasyRSA-{{ hostvars[server_partner].hostname }}"
+  delegate_to: "{{ hostvars[server_partner].ansible_host }}"
+  when: not cli_crt.stat.exists
+
+- name: Get needed files
+  fetch:
+    src: "{{ flnm }}"
+    dest: "{{ ans01_openvpn_dir_path }}/{{ hostvars[server_partner].ansible_host }}/"
+    flat: yes
+  loop:
+    - "/root/EasyRSA-{{ hostvars[server_partner].hostname }}/pki/issued/{{ hostname }}.crt"
+    - "/root/EasyRSA-{{ hostvars[server_partner].hostname }}/pki/private/{{ hostname }}.key"
+  loop_control:
+    loop_var: flnm
+  delegate_to: "{{ hostvars[server_partner].ansible_host }}"
+
+- name: Set default value for side
+  set_fact:
+    side: 'int'
+  when: side is not defined
+
+- name: Set ovpn server connect address for INTERNAL SIDE
+  set_fact:
+    ovpn_srv_addr: "{{ hostvars[server_partner].ansible_host }}"
+  when: side == 'int'
+
+- name: Set ovpn server connect address for EXTERNAL SIDE
+  set_fact:
+    ovpn_srv_addr: "{{ hostvars[server_partner].ext_ip }}"
+  when: side == 'ext'
+
+- name: Create cli conf
+  local_action:
+    module: template
+    src: template/client_lin.j2
+    dest: "{{ ans01_openvpn_dir_path }}/{{ hostvars[server_partner].ansible_host }}/{{ hostname }}.conf"

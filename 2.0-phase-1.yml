@@ -1,0 +1,344 @@
+---
+### Create variables file
+- hosts: mailservers_ext, mailservers_loc
+  gather_facts: false
+  tasks:
+    - name: Plug
+      set_fact:
+        server_partner: None
+      when: inventory_hostname in groups['mailservers_loc']
+
+    - name: check vars file
+      stat:
+        path: "variables/{{ vdomain }}.yml"
+      register: check_variables_file
+      delegate_to: localhost
+
+      
+    - name: Write vars file
+      template:
+        src: template/domain_vars_file.j2
+        dest: "variables/{{ vdomain }}.yml"
+      delegate_to: localhost
+      when: not check_variables_file.stat.exists
+
+    # ### Collect data for vars file
+    # - name: Write mailserver data
+    #   lineinfile:
+    #     path: "variables/{{ vdomain }}.yml"
+    #     line: "mailserver: {{ hostname }}"
+    #   delegate_to: localhost
+
+- hosts: brokers
+  become: true
+  become_user: root
+  tasks:
+    - name: Load default variables
+      include_vars:
+        file: variables/default.yml
+
+      ### Включаем маршрутизацию пакетов
+
+    - name: Edit sysctl.conf
+      copy:
+        dest: /etc/sysctl.conf
+        content: |
+          net.ipv4.ip_forward=1
+          net.core.wmem_default=1048576
+          net.core.rmem_default=1048576
+          net.ipv4.tcp_rmem=4096        1048576 6291456
+          net.ipv4.tcp_wmem=4096        1048576 4194304
+      notify: "Apply core settings"
+
+    - block:
+      - name: mailGate01
+        iptables:
+          table: nat
+          chain: POSTROUTING
+          source: "10.100.{{ openvpn_id }}.0/24"
+          out_interface: "{{ ext_iface }}"
+          jump: MASQUERADE
+        notify: "Save iptables"
+
+      - name: ACCEPT all from VPN interface
+        iptables:
+          chain: INPUT
+          in_interface: "tun0"
+          jump: ACCEPT
+        notify: "Save iptables"
+
+      - name: ACCEPT OpenVPN connection
+        iptables:
+          chain: INPUT
+          protocol: tcp
+          destination_port: "{{ 20000 + openvpn_id }}"
+          ctstate: NEW
+          syn: match
+          jump: ACCEPT
+        notify: "Save iptables"
+
+      # base
+
+      - include_tasks:
+          file: tasks/firewall-base.yml
+      tags:
+        - firewall
+
+    # Generate certificates
+    - name: Check folder for Certificate Centr current host
+      register: easyrsa_file
+      stat:
+        path: "{{ openvpn_ca_path }}"
+
+    - name: Prepare server certificats
+      block:
+        - name: Download easy-rsa if not exists
+          get_url:
+            url: "https://github.com/OpenVPN/easy-rsa/releases/download/v{{ easyrsa_version }}/EasyRSA-{{ easyrsa_version }}.tgz"
+            dest: "/root/EasyRSA-{{ easyrsa_version }}.tgz"
+            mode: '0640'
+
+        - name: Unpack tar if easy-rsa dir not exists
+          unarchive:
+            src: "/root/EasyRSA-{{ easyrsa_version }}.tgz"
+            dest: /root
+            remote_src: yes
+
+        - name: Create EasyRSA CA Dir
+          file:
+            path: "{{openvpn_ca_path}}"
+            state: directory
+
+        - name: Copy EasyRSA in the new folder
+          copy:
+            src: "/root/EasyRSA-{{ easyrsa_version }}/"
+            dest: "{{openvpn_ca_path}}"
+            mode: '0775'
+            remote_src: yes
+
+        - name: chmod easyrsa
+          file:
+            path: "{{openvpn_ca_path}}/easyrsa"
+            mode: '0775'
+
+        - name: Delete source
+          file:
+            path: "/root/EasyRSA-{{ easyrsa_version }}"
+            state: absent
+
+
+        - name: Create pki dir
+          shell:
+            cmd: ./easyrsa init-pki
+            chdir: "{{ openvpn_ca_path }}"
+
+        - name: Generate ca.crt and ca.key
+          shell:
+            cmd: "yes '{{ hostname }}' | ./easyrsa build-ca nopass"
+            chdir: "{{ openvpn_ca_path }}"
+
+        - name: Generate request server crt and key
+          shell:
+            cmd: yes '{{ hostname }}' | ./easyrsa gen-req server nopass
+            chdir: "{{ openvpn_ca_path }}"
+
+        - name: Generate server crt and key
+          shell:
+            cmd: yes 'yes' | ./easyrsa sign-req server server
+            chdir: "{{ openvpn_ca_path }}"
+
+        - name: Generate dh key
+          shell:
+            cmd: ./easyrsa gen-dh
+            chdir: "{{ openvpn_ca_path }}"
+
+        - name: Generate TLS key
+          shell:
+            cmd: openvpn --genkey --secret ta.key
+            chdir: "{{ openvpn_ca_path }}"
+      when: not easyrsa_file.stat.exists
+
+      ### Забираем с openvpn сервера нужные файлы
+
+    - name: Get needed files
+      fetch:
+        src: "{{ flnm }}"
+        dest: "{{ ans01_openvpn_dir_path }}/{{ ansible_host }}/"
+        flat: yes
+      loop:
+        - "{{ openvpn_ca_path }}/pki/ca.crt"
+        - "{{ openvpn_ca_path }}/pki/dh.pem"
+        - "{{ openvpn_ca_path }}/pki/issued/server.crt"
+        - "{{ openvpn_ca_path }}/pki/private/server.key"
+        - "{{ openvpn_ca_path }}/ta.key"
+        # - "{{ openvpn_ca_path }}/cli_conf/{{cli_cert_name}}.conf"
+      loop_control:
+        loop_var: flnm
+
+    # ovpn-srv-magistral-core 
+    - name: Create folder for openvpn server files
+      file:
+        path: "{{ dirpath }}"
+        state: directory
+        mode: 0660
+      loop:
+        - "/etc/openvpn/server{{ openvpn_id }}/"
+        - "/etc/openvpn/ccd{{ openvpn_id }}/"
+      loop_control:
+        loop_var: dirpath
+
+    - name: Copy needed files
+      copy:
+        src: "{{ flnm }}"
+        dest:  "/etc/openvpn/server{{ openvpn_id }}/"
+        mode: 0640
+        remote_src: yes
+      loop:
+        - "{{ openvpn_ca_path }}/ta.key"
+        - "{{ openvpn_ca_path }}/pki/ca.crt"
+        - "{{ openvpn_ca_path }}/pki/dh.pem"
+        - "{{ openvpn_ca_path }}/pki/private/server.key"
+        - "{{ openvpn_ca_path }}/pki/issued/server.crt"
+      loop_control:
+        loop_var: flnm
+
+    - name: Check server.conf file
+      template:
+        src: template/server.j2
+        dest: "/etc/openvpn/server{{ openvpn_id }}.conf"
+      notify: "Reload openvpn server"
+      
+    - name: Run openvpn and enable this demon
+      systemd:
+        name: "openvpn@server{{ openvpn_id }}"
+        state: started
+        enabled: yes
+
+  handlers:
+    - name: Apply core settings
+      shell:
+        cmd: "sysctl -w {{ sysctlstr }}"
+      loop:
+        - 'net.ipv4.ip_forward=1'
+        - 'net.core.rmem_default=1048576'
+        - 'net.core.wmem_default=1048576'
+        - 'net.ipv4.tcp_rmem="4096 1048576 6291456"'
+        - 'net.ipv4.tcp_wmem="4096 1048576 6291456"'
+      loop_control:
+        loop_var: sysctlstr
+
+    - name: Reload openvpn server
+      systemd:
+        name: "openvpn@server{{ openvpn_id }}"
+        state: restarted
+        enabled: yes
+
+    - name: Save iptables
+      shell: netfilter-persistent save
+
+- hosts: ansible_server, exim_core, graylog01
+  become: true
+  become_user: root
+  tasks:
+    - name: Load default variables
+      include_vars:
+        file: variables/default.yml
+
+    - name: Edit sysctl.conf
+      copy:
+        dest: /etc/sysctl.conf
+        content: |
+          net.core.wmem_default=1048576
+          net.core.rmem_default=1048576
+          net.ipv4.tcp_rmem=4096        1048576 6291456
+          net.ipv4.tcp_wmem=4096        1048576 4194304
+      notify: "Apply core settings"
+
+    # Генерируем сертификат для всех сервров для Ansible сервера
+    - include_tasks: tasks/lin_cli_gen_cert.yml
+      loop: "{{ groups['brokers'] }}"
+      loop_control:
+        loop_var: server_partner
+
+    # Настраиваем всех клиентов на Ansible сервере
+    - include_tasks: tasks/lin_cli_iar.yml
+      loop: "{{ groups['brokers'] }}"
+      loop_control:
+        loop_var: server_partner
+
+  handlers:
+    - name: Apply core settings
+      shell:
+        cmd: "sysctl -w {{ sysctlstr }}"
+      loop:
+        - 'net.core.rmem_default=1048576'
+        - 'net.core.wmem_default=1048576'
+        - 'net.ipv4.tcp_rmem="4096 1048576 6291456"'
+        - 'net.ipv4.tcp_wmem="4096 1048576 6291456"'
+      loop_control:
+        loop_var: sysctlstr
+
+    - name: Reload openvpn client
+      shell:
+        cmd: "systemctl restart openvpn@client*"
+
+- hosts: ovpn_magistral_client_win
+  gather_facts: false
+  tasks:
+    - name: Load default variables
+      include_vars:
+        file: variables/default.yml
+
+    - name: Load vdomain variables
+      include_vars:
+        file: "variables/{{ vdomain }}.yml"
+
+    # tasks file for ovpn-mag-cli-gen-crt
+    - name: Check cli crt and key
+      stat:
+        path: "/root/EasyRSA-{{ hostvars[server_partner].hostname }}/pki/issued/{{ inventory_hostname }}.crt"
+      register: cli_crt
+      delegate_to: "{{ hostvars[server_partner].ansible_host }}"
+
+    - name: Generate certificate
+      shell: 
+          cmd: "./easyrsa build-client-full {{ inventory_hostname }} nopass"
+          chdir: "/root/EasyRSA-{{ hostvars[server_partner].hostname }}"
+      delegate_to: "{{ hostvars[server_partner].ansible_host }}"
+      when: not cli_crt.stat.exists
+
+    - name: Get needed files
+      fetch:
+        src: "{{ flnm }}"
+        dest: "{{ ans01_openvpn_dir_path }}/{{ hostvars[server_partner].ansible_host }}/"
+        flat: yes
+      loop:
+        - "/root/EasyRSA-{{ hostvars[server_partner].hostname }}/pki/issued/{{ inventory_hostname }}.crt"
+        - "/root/EasyRSA-{{ hostvars[server_partner].hostname }}/pki/private/{{ inventory_hostname }}.key"
+      loop_control:
+        loop_var: flnm
+      delegate_to: "{{ hostvars[server_partner].ansible_host }}"
+
+    - name: Create ccd1 file
+      copy:
+        dest: "/etc/openvpn/ccd{{ hostvars[server_partner].openvpn_id }}/{{ inventory_hostname }}"
+        content: |
+          push "redirect-gateway def1 bypass-dhcp"
+          push "dhcp-option DNS 8.8.8.8"
+          push "route 192.168.254.0 255.255.255.0 192.168.21.1 10"
+      delegate_to: "{{ hostvars[server_partner].ansible_host }}"
+      when: inventory_hostname in groups['rm']
+
+    - name: Create cli conf
+      local_action:
+        module: template
+        src: template/client_win.j2
+        dest: "{{ ans01_openvpn_dir_path }}/{{ hostvars[server_partner].ansible_host }}/{{ inventory_hostname }}.ovpn"
+
+    # ### Collect data for vars file
+    # - name: Write mailserver data
+    #   lineinfile:
+    #     path: "variables/{{ vdomain }}.yml"
+    #     line: "mailserver: {{ hostname }}"
+    #   when: inventory_hostname in groups['mailservers']
+    #   delegate_to: localhost

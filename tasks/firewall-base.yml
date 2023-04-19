@@ -1,0 +1,36 @@
+---
+- name: ACCEPT ssh
+  iptables:
+    chain: INPUT
+    protocol: tcp
+    destination_port: "22"
+    ctstate: NEW
+    syn: match
+    jump: ACCEPT
+  notify: "Save iptables"
+
+- name: ACCEPT ESTABLISHED, RELATED, UNTRACKED
+  iptables:
+    chain: INPUT
+    ctstate: ESTABLISHED,RELATED,UNTRACKED
+    jump: ACCEPT
+  notify: "Save iptables"
+
+- name: Drop invalid
+  iptables:
+    chain: INPUT
+    ctstate: INVALID
+    jump: DROP
+  notify: "Save iptables"
+
+- name: ACCEPT all from local
+  iptables:
+    chain: INPUT
+    source: 127.0.0.1
+    jump: ACCEPT
+  notify: "Save iptables"
+
+- name: DROP input by default
+  iptables:
+    chain: INPUT
+    policy: DROP

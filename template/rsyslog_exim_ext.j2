@@ -1,0 +1,16 @@
+module(load="imfile")
+input(type="imfile"
+      File="/var/log/exim4/mainlog"
+      Facility="local0"
+      Tag="exim4"
+)
+if $programname == 'exim4' then {
+    action(
+        type="omfwd"
+        Target="{{ graylog_ip }}"
+        Port="10514"
+        Protocol="udp"
+        Template="RSYSLOG_SyslogProtocol23Format"
+    )
+    stop
+}

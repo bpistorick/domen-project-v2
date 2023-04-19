@@ -1,0 +1,20 @@
+client
+proto tcp-client
+dev tun
+remote {{ ovpn_srv_addr }} {{ 20000 + hostvars[server_partner].openvpn_id }}
+resolv-retry infinite
+nobind
+persist-key
+persist-tun
+ca /etc/openvpn/client_to_{{server_partner}}/ca.crt
+cert /etc/openvpn/client_to_{{server_partner}}/{{ hostname }}.crt
+key /etc/openvpn/client_to_{{server_partner}}/{{ hostname }}.key
+remote-cert-tls server
+tls-auth /etc/openvpn/client_to_{{server_partner}}/ta.key 1
+cipher AES-256-CBC
+auth SHA256
+auth-nocache
+sndbuf 1048576
+rcvbuf 1048576
+keepalive 10 120
+verb 3
